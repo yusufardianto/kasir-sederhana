@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File,Form
 from sqlalchemy.orm import Session
 from app import models, schemas, crud
 from app.database import get_db
+from fastapi import Query
+from typing import Optional
 from fastapi import Request
 from fastapi.responses import FileResponse
 import shutil
@@ -13,12 +15,19 @@ router = APIRouter(prefix="/produk", tags=["Produk"])
 UPLOAD_DIR = "uploads"
 
 @router.get("/", response_model=dict)
-def get_produk_list(request: Request, db: Session = Depends(get_db)):
-    produk_list = db.query(models.Produk).all()
-    print("produk? = ",produk_list)
+def get_produk_list(
+    request: Request,
+    q: str = Query(default=None, description="Pencarian produk berdasarkan nama"),
+    db: Session = Depends(get_db)
+):
+    if q:
+        produk_list = db.query(models.Produk).filter(models.Produk.nama.ilike(f"%{q}%")).all()
+    else:
+        produk_list = db.query(models.Produk).all()
+
     result = []
     for p in produk_list:
-        gambar_url = str(request.url_for("static", path=p.gambar)) if p.gambar else None
+        gambar_url = str(request.url_for("get_gambar", filename=p.gambar)) if p.gambar else None
         result.append({
             "id": p.id,
             "nama": p.nama,
@@ -80,13 +89,39 @@ def create_produk(
     }
 
 @router.put("/{produk_id}", response_model=dict)
-def update_produk(produk_id: int, produk: schemas.ProdukCreate, db: Session = Depends(get_db)):
+def update_produk(
+    produk_id: int,
+    nama: str = Form(...),
+    harga: int = Form(...),
+    stok: int = Form(...),
+    gambar: UploadFile = File(None),  # opsional, tidak wajib dikirim
+    db: Session = Depends(get_db)
+):
     db_produk = db.query(models.Produk).filter(models.Produk.id == produk_id).first()
     if not db_produk:
         raise HTTPException(status_code=404, detail="Produk tidak ditemukan")
 
-    for attr, value in produk.dict(exclude_unset=True).items():
-        setattr(db_produk, attr, value)
+    # Update data basic
+    db_produk.nama = nama
+    db_produk.harga = harga
+    db_produk.stok = stok
+
+    # Kalau ada gambar baru dikirim, simpan dan ganti
+    if gambar:
+        ext = gambar.filename.split(".")[-1]
+        filename = f"{uuid.uuid4()}.{ext}"
+        filepath = os.path.join(UPLOAD_DIR, filename)
+
+        with open(filepath, "wb") as buffer:
+            shutil.copyfileobj(gambar.file, buffer)
+
+        # (Opsional) Hapus file lama kalau perlu
+        if db_produk.gambar:
+            lama = os.path.join(UPLOAD_DIR, db_produk.gambar)
+            if os.path.exists(lama):
+                os.remove(lama)
+
+        db_produk.gambar = filename
 
     db.commit()
     db.refresh(db_produk)
